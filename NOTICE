@@ -1,0 +1,6 @@
+ortenv
+Copyright (c) 2026 Drew Bednar
+
+Original project code is licensed under the MIT License (LICENSE).
+This repository contains the coordinator's source code, not a native runtime
+distribution. Its Go binding dependency is declared in go.mod.
