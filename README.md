@@ -83,6 +83,9 @@ conflicting paths and foreign-owner rejection. Without `ORTENV_TEST_LIBRARY`,
 native tests explicitly skip. The concurrent tests use `WaitGroup.Go`, which sets
 the Go 1.25 minimum.
 
+A utility script, `./scripts/ort-manage.sh`, is provided for developers to 
+manage Onnxruntime versions (CPU and Cuda) on a Linux development amd64 machine.
+
 ## License
 
 [MIT](LICENSE), Copyright (c) 2026 Drew Bednar. The `onnxruntime_go` binding is
