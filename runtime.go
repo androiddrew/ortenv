@@ -1,6 +1,7 @@
 // Package ortenv coordinates the process-global ONNX Runtime environment across
 // independent components. All native users must hold a lease until
-// their sessions, options and tensors have been destroyed.
+// their sessions, options and tensors have been destroyed. Once initialized,
+// the environment and its native library are retained until process exit.
 package ortenv
 
 import (
@@ -18,10 +19,23 @@ var state struct {
 	library string
 }
 
+// Keep binding calls replaceable so lifecycle tests need no native runtime.
+var binding = struct {
+	isInitialized func() bool
+	setLibrary    func(string)
+	initialize    func() error
+}{
+	isInitialized: ort.IsInitialized,
+	setLibrary:    ort.SetSharedLibraryPath,
+	initialize:    func() error { return ort.InitializeEnvironment() },
+}
+
 // Acquire accepts a library file path or an OS-loader name such as
-// "libonnxruntime.so". All active leases must use the same selector (file paths
-// are normalized). Compatibility is determined by the binding's C API request,
-// not an exact native version string. Release the lease after native resources.
+// "libonnxruntime.so". The first successful acquisition pins the selector for
+// the lifetime of the process, including periods with no active leases. All
+// acquisitions must use the same selector (file paths are normalized).
+// Compatibility is determined by the binding's C API request, not an exact
+// native version string. Release the lease after native resources.
 func Acquire(library string) (*Lease, error) {
 	state.Lock()
 	defer state.Unlock()
@@ -29,16 +43,19 @@ func Acquire(library string) (*Lease, error) {
 	if err != nil {
 		return nil, err
 	}
-	if state.users > 0 {
+	if state.library != "" {
 		if state.library != path {
-			return nil, errors.New("ortenv: another active lease uses a different library selector; use the same path or loader name for all active leases")
+			return nil, errors.New("ortenv: the process is pinned to a different library selector; use the same path or loader name for all acquisitions")
+		}
+		if !binding.isInitialized() {
+			return nil, errors.New("ortenv: ONNX Runtime environment was destroyed outside ortenv; restart the process rather than reinitializing")
 		}
 	} else {
-		if ort.IsInitialized() {
+		if binding.isInitialized() {
 			return nil, errors.New("ortenv: ONNX Runtime environment is owned by another component outside ortenv")
 		}
-		ort.SetSharedLibraryPath(path)
-		if err = ort.InitializeEnvironment(); err != nil {
+		binding.setLibrary(path)
+		if err = binding.initialize(); err != nil {
 			return nil, fmt.Errorf("ortenv: initialize ONNX Runtime from %q (must provide the binding's requested C API): %w", path, err)
 		}
 		state.library = path
@@ -70,14 +87,13 @@ func librarySelector(library string) (string, error) {
 // from Acquire. A Lease must not be copied.
 type Lease struct{ active bool }
 
-// Close releases the lease. When the last active lease is released, Close
-// destroys the environment and returns any error from doing so. Close is
-// idempotent, safe to call concurrently and safe on a nil Lease.
+// Close releases the lease, retaining the environment and native library even
+// after the last lease is closed. Unloading and reloading the runtime can leave
+// CUDA providers with stale pointers, so the runtime stays loaded until process
+// exit. Sessions, options and tensors must still be destroyed before Close.
 //
-// If destroying the environment fails, the lease is still released and the
-// coordinator no longer considers itself the owner, but the native environment
-// may remain initialized. A later Acquire then fails with the error for an
-// environment owned outside ortenv.
+// Close always returns nil. It is idempotent, safe to call concurrently and safe
+// on a nil Lease.
 func (l *Lease) Close() error {
 	state.Lock()
 	defer state.Unlock()
@@ -86,9 +102,5 @@ func (l *Lease) Close() error {
 	}
 	l.active = false
 	state.users--
-	if state.users == 0 {
-		state.library = ""
-		return ort.DestroyEnvironment()
-	}
 	return nil
 }
