@@ -13,7 +13,7 @@ func TestLoaderNamesRemainLoaderNames(t *testing.T) {
 			t.Fatalf("%q became %q: %v", name, got, err)
 		}
 	}
-	if _, err := Acquire(""); err == nil {
+	if err := Init(""); err == nil {
 		t.Fatal("accepted missing runtime selector")
 	}
 }

@@ -1,7 +1,7 @@
 // Package ortenv coordinates the process-global ONNX Runtime environment across
-// independent components. All native users must hold a lease until
-// their sessions, options and tensors have been destroyed. Once initialized,
-// the environment and its native library are retained until process exit.
+// independent components. Every component calls Init before creating native
+// sessions, options or tensors. Once initialized, the environment and its
+// native library are retained until process exit.
 package ortenv
 
 import (
@@ -15,7 +15,6 @@ import (
 
 var state struct {
 	sync.Mutex
-	users   int
 	library string
 }
 
@@ -30,38 +29,43 @@ var binding = struct {
 	initialize:    func() error { return ort.InitializeEnvironment() },
 }
 
-// Acquire accepts a library file path or an OS-loader name such as
-// "libonnxruntime.so". The first successful acquisition pins the selector for
-// the lifetime of the process, including periods with no active leases. All
-// acquisitions must use the same selector (file paths are normalized).
+// Init initializes the process-global ONNX Runtime environment from library on
+// the first successful call. library is a file path or an OS-loader name such
+// as "libonnxruntime.so"; file paths are normalized. The first successful call
+// pins the selector until process exit, and later calls with the same selector
+// return nil without reloading anything. A different selector, an environment
+// initialized outside ortenv, or one destroyed outside ortenv is an error.
 // Compatibility is determined by the binding's C API request, not an exact
-// native version string. Release the lease after native resources.
-func Acquire(library string) (*Lease, error) {
+// native version string. Init is safe to call concurrently.
+//
+// The environment and its native library are never destroyed: unloading and
+// reloading the runtime can leave CUDA providers with stale pointers. Sessions,
+// options and tensors must still be destroyed normally.
+func Init(library string) error {
 	state.Lock()
 	defer state.Unlock()
 	path, err := librarySelector(library)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if state.library != "" {
 		if state.library != path {
-			return nil, errors.New("ortenv: the process is pinned to a different library selector; use the same path or loader name for all acquisitions")
+			return errors.New("ortenv: the process is pinned to a different library selector; use the same path or loader name for all components")
 		}
 		if !binding.isInitialized() {
-			return nil, errors.New("ortenv: ONNX Runtime environment was destroyed outside ortenv; restart the process rather than reinitializing")
+			return errors.New("ortenv: ONNX Runtime environment was destroyed outside ortenv; restart the process rather than reinitializing")
 		}
-	} else {
-		if binding.isInitialized() {
-			return nil, errors.New("ortenv: ONNX Runtime environment is owned by another component outside ortenv")
-		}
-		binding.setLibrary(path)
-		if err = binding.initialize(); err != nil {
-			return nil, fmt.Errorf("ortenv: initialize ONNX Runtime from %q (must provide the binding's requested C API): %w", path, err)
-		}
-		state.library = path
+		return nil
 	}
-	state.users++
-	return &Lease{active: true}, nil
+	if binding.isInitialized() {
+		return errors.New("ortenv: ONNX Runtime environment is owned by another component outside ortenv")
+	}
+	binding.setLibrary(path)
+	if err = binding.initialize(); err != nil {
+		return fmt.Errorf("ortenv: initialize ONNX Runtime from %q (must provide the binding's requested C API): %w", path, err)
+	}
+	state.library = path
+	return nil
 }
 
 func librarySelector(library string) (string, error) {
@@ -81,28 +85,4 @@ func librarySelector(library string) (string, error) {
 		path = resolved
 	}
 	return path, nil
-}
-
-// Lease is a share of the process-global ONNX Runtime environment, obtained
-// from Acquire. A Lease must not be copied. Because the environment is retained
-// until process exit, the lease count is bookkeeping only: closing leases frees
-// no native state.
-type Lease struct{ active bool }
-
-// Close releases the lease, retaining the environment and native library even
-// after the last lease is closed. Unloading and reloading the runtime can leave
-// CUDA providers with stale pointers, so the runtime stays loaded until process
-// exit. Sessions, options and tensors must still be destroyed before Close.
-//
-// Close always returns nil. It is idempotent, safe to call concurrently and safe
-// on a nil Lease.
-func (l *Lease) Close() error {
-	state.Lock()
-	defer state.Unlock()
-	if l == nil || !l.active {
-		return nil
-	}
-	l.active = false
-	state.users--
-	return nil
 }
