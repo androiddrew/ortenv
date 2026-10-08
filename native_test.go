@@ -53,76 +53,37 @@ func nativeSubprocess(t *testing.T) bool {
 	return false
 }
 
-func TestNativeSharedLeases(t *testing.T) {
+func TestNativeSharedInit(t *testing.T) {
 	path := nativeLibrary(t, "ORTENV_TEST_LIBRARY")
 	if !nativeSubprocess(t) {
 		return
 	}
-	var leases []*Lease
-	t.Cleanup(func() {
-		for _, lease := range leases {
-			if err := lease.Close(); err != nil {
-				t.Error(err)
-			}
-		}
-	})
 	for range 5 {
-		lease, err := Acquire(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		leases = append(leases, lease)
+		mustInit(t, path)
 	}
-	expectAcquireError(t, path+".different", "different library selector")
+	expectInitError(t, path+".different", "different library selector")
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			lease, err := Acquire(path)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if err := lease.Close(); err != nil {
-				t.Error(err)
-			}
-			if err := lease.Close(); err != nil {
+			if err := Init(path); err != nil {
 				t.Error(err)
 			}
 		})
 	}
 	wg.Wait()
-	for _, lease := range leases[:4] {
-		if err := lease.Close(); err != nil {
+	// Create and destroy native objects across several components' Init calls.
+	for range 3 {
+		mustInit(t, path)
+		options, err := ort.NewSessionOptions()
+		if err != nil {
 			t.Fatal(err)
 		}
-		if !ort.IsInitialized() {
-			t.Fatal("released another component's environment")
+		if err := options.Destroy(); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if err := leases[4].Close(); err != nil {
-		t.Fatal(err)
-	}
-	if !ort.IsInitialized() {
-		t.Fatal("last Close destroyed the environment")
-	}
-	expectAcquireError(t, path+".different", "different library selector")
-	lease, err := Acquire(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leases = append(leases, lease)
-	options, err := ort.NewSessionOptions()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := options.Destroy(); err != nil {
-		t.Fatal(err)
-	}
-	if err := lease.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if state.users != 0 || !ort.IsInitialized() {
-		t.Fatal("reacquisition lost process ownership")
+	if !ort.IsInitialized() || state.library == "" {
+		t.Fatal("repeated Init lost process ownership")
 	}
 }
 
@@ -135,7 +96,7 @@ func TestNativeForeignEnvironment(t *testing.T) {
 	if err := ort.InitializeEnvironment(); err != nil {
 		t.Fatal(err)
 	}
-	expectAcquireError(t, path, "outside ortenv")
+	expectInitError(t, path, "outside ortenv")
 	if !ort.IsInitialized() {
 		t.Fatal("destroyed foreign environment")
 	}
@@ -147,15 +108,12 @@ func TestNativeInitializationFailureAllowsRetry(t *testing.T) {
 		return
 	}
 	missing := filepath.Join(t.TempDir(), "missing-runtime.so")
-	expectAcquireError(t, missing, "initialize ONNX Runtime")
-	if ort.IsInitialized() || state.users != 0 || state.library != "" {
+	expectInitError(t, missing, "initialize ONNX Runtime")
+	if ort.IsInitialized() || state.library != "" {
 		t.Fatal("failed initialization took ownership")
 	}
-	lease := acquireLease(t, path)
-	if err := lease.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if state.users != 0 || !ort.IsInitialized() {
-		t.Fatal("successful retry did not retain the environment")
+	mustInit(t, path)
+	if !ort.IsInitialized() {
+		t.Fatal("successful retry did not initialize the environment")
 	}
 }
