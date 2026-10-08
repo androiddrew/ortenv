@@ -84,7 +84,9 @@ func librarySelector(library string) (string, error) {
 }
 
 // Lease is a share of the process-global ONNX Runtime environment, obtained
-// from Acquire. A Lease must not be copied.
+// from Acquire. A Lease must not be copied. Because the environment is retained
+// until process exit, the lease count is bookkeeping only: closing leases frees
+// no native state.
 type Lease struct{ active bool }
 
 // Close releases the lease, retaining the environment and native library even

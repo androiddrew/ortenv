@@ -37,7 +37,9 @@ releases until a v1 release is made.
   Direct foreign environment ownership is rejected; do not independently call
   `ort.InitializeEnvironment` or `ort.DestroyEnvironment` once ortenv manages the
   environment, including periods with no active leases. If `Acquire` detects
-  external destruction, it returns an error requiring a process restart.
+  external destruction, it returns an error requiring a process restart. It
+  cannot detect an external destroy followed by an external re-initialization,
+  which reloads the runtime and can reintroduce the CUDA crash.
 - Leases must not be copied. `Close` is idempotent, nil-safe and concurrency-safe.
   It always returns nil; callers still destroy their native resources first.
 - The first successful acquisition pins the native-library selector for the
@@ -47,6 +49,9 @@ releases until a v1 release is made.
   components: a loader name and an absolute path are not assumed to identify the
   same file. Conflicts fail even after all leases close; switching runtimes
   requires a new process. A failed initialization does not pin the selector.
+  The binding unloads the library when loading or API lookup fails, but not if
+  environment creation fails after loading; avoid retrying with a different
+  selector in that case.
 - Provider, device and thread choices belong to **individual sessions**. The
   manager does not configure models, schedule inference or serialize session runs.
 - Requires **Go 1.25.0** or newer, with CGO. The binding version is declared in
@@ -91,20 +96,18 @@ selectors, concurrent acquisitions and repeated closes, initialization failure
 and retry, foreign ownership, and external destruction. The concurrent tests use
 `WaitGroup.Go`, which sets the Go 1.25 minimum.
 
-For explicit GPU-free checks with limited parallelism on a shared Linux host:
-
 ```bash
-env -u ORTENV_TEST_LIBRARY -u ORTENV_TEST_CUDA_LIBRARY \
-    GOFLAGS= GOWORK=off GOMAXPROCS=2 \
-    nice -n 15 go test -race -p 1 -parallel 1 -count=1 ./...
-env -u ORTENV_TEST_LIBRARY -u ORTENV_TEST_CUDA_LIBRARY \
-    GOFLAGS= GOWORK=off GOMAXPROCS=2 \
-    nice -n 15 go vet -p 1 ./...
+go test -race ./...
+go vet ./...
 ```
 
-These still consume CPU, RAM and disk I/O. Avoiding native runtime calls, rather
-than just hiding devices with `CUDA_VISIBLE_DEVICES`, keeps these checks off the
-GPU.
+On a shared GPU host, unset the native opt-in variables so no test loads ONNX
+Runtime, and limit parallelism:
+
+```bash
+env -u ORTENV_TEST_LIBRARY -u ORTENV_TEST_CUDA_LIBRARY GOWORK=off \
+    nice -n 15 go test -race -p 1 -count=1 ./...
+```
 
 ### Native lifecycle checks (opt-in)
 

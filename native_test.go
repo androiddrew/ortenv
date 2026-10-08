@@ -1,6 +1,7 @@
 package ortenv
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -43,6 +44,10 @@ func nativeSubprocess(t *testing.T) bool {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("native subprocess failed: %v\n%s", err, output)
+	}
+	// A child that matched no test or skipped also exits 0.
+	if !bytes.Contains(output, []byte("--- PASS: "+t.Name()+" (")) {
+		t.Fatalf("native subprocess did not pass %s:\n%s", t.Name(), output)
 	}
 	t.Logf("native subprocess:\n%s", output)
 	return false
